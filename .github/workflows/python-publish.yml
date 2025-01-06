@@ -25,7 +25,7 @@ jobs:
 
     - name: Run tests
       run: |
-        python -m unittest dicover tests
+        python -m unittest discover tests
 
   build-and-publish:
     needs: test
