@@ -3,9 +3,11 @@ import logging
 import os
 import sys
 from argparse import ArgumentParser
+
 import google.generativeai as genai
 from dotenv import load_dotenv
 from google.api_core.exceptions import InternalServerError, NotFound
+
 
 def generate_docstring(function_code, function_name, model, tries=2, extensive=False):
     """Generate a docstring for a given Python function.
@@ -30,7 +32,8 @@ Raises:
         try:
             response = model.generate_content(prompt.format(function_code))
         except Exception:
-            logging.exception(f'Error generating docstring at attempt {attempt + 1}.')
+            logging.exception(
+                f'Error generating docstring at attempt {attempt + 1}.')
             continue
         raw_docstring = response.text
         logging.debug(raw_docstring)
@@ -44,8 +47,11 @@ Raises:
             final_docstring = raw_docstring[docstring_start:docstring_end]
             return final_docstring
         else:
-            logging.warning(f'Could not find opening triple quotes for function, regenerating... {function_name}')
-    logging.warning(f'Could not generate docstrings in a good format for this method: {function_name}.')
+            logging.warning(
+                f'Could not find opening triple quotes for function, regenerating... {function_name}')
+    logging.warning(
+        f'Could not generate docstrings in a good format for this method: {function_name}.')
+
 
 def generate_all_docstrings(file_path, model, methods, extensive):
     """Generates docstrings for functions in a Python file.
@@ -64,13 +70,16 @@ Raises:
 """
     with open(file_path, 'r') as f:
         src = f.read()
+
     try:
         tree = ast.parse(src)
     except Exception as e:
         logging.exception(f'Error: Invalid syntax in file:')
         sys.exit()
+
     if not methods:
         methods = []
+
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
             if methods and node.name.startswith('_') and (node.name not in methods):
@@ -78,22 +87,35 @@ Raises:
             function_code = ast.get_source_segment(src, node)
             logging.info(f'Generating docstring to {node.name}...')
             try:
-                docstring = generate_docstring(function_code, node.name, model, extensive=extensive)
+                docstring = generate_docstring(
+                    function_code, node.name, model, extensive=extensive)
             except Exception as e:
-                logging.error(f'Error generating docstring for {node.name} after several retries.')
+                logging.error(
+                    f'Error generating docstring for {node.name} after several retries.')
                 continue
-            node.body = [ast.Expr(value=ast.Constant(value=docstring, kind=None))] + node.body
+            node.body = [ast.Expr(value=ast.Constant(
+                value=docstring, kind=None))] + node.body
+
     return ast.unparse(tree)
+
+
 if __name__ == '__main__':
-    available_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-1.0-pro']
+    available_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash',
+                        'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-1.0-pro']
     default_model = available_models[1]
+
     args = ArgumentParser()
     args.add_argument('module', help='Path to the python module.')
-    args.add_argument('--methods', help='Choose specific methods in the module. If left blank all public methods will be documented.', nargs='+')
-    args.add_argument('--model', help=f'Choose available model. {available_models}', default=default_model)
-    args.add_argument('--no-backup', help='Choose not create a backup for the original file', default=False, action='store_true')
-    args.add_argument('--extensive', help='Choose to use an extensive docstring with examples in Google style.', default=False, action='store_true')
+    args.add_argument(
+        '--methods', help='Choose specific methods in the module. If left blank all public methods will be documented.', nargs='+')
+    args.add_argument(
+        '--model', help=f'Choose available model. {available_models}', default=default_model)
+    args.add_argument('--no-backup', help='Choose not create a backup for the original file',
+                      default=False, action='store_true')
+    args.add_argument('--extensive', help='Choose to use an extensive docstring with examples in Google style.',
+                      default=False, action='store_true')
     args.add_argument('--debug', action='store_true', default=False)
+
     parsed_args = args.parse_args()
     file_path = parsed_args.module
     methods = parsed_args.methods
@@ -101,17 +123,24 @@ if __name__ == '__main__':
     no_backup = parsed_args.no_backup
     extensive = parsed_args.extensive
     debug = parsed_args.debug
+
     logging_level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(level=logging_level)
     logging.debug(vars(parsed_args))
+
     valid_extensions = {'.py', '.pyi', '.pyw', '.py.bak'}
     if not os.path.exists(file_path) or not any((ext in file_path for ext in valid_extensions)):
-        raise FileNotFoundError(f'Error: File not found or invalid python file: {file_path}')
+        raise FileNotFoundError(
+            f'Error: File not found or invalid python file: {file_path}')
+
     load_dotenv()
     if not os.getenv('GEMINI_API_KEY'):
         raise EnvironmentError('No Gemini API key found in your PATH.')
+
     if model_name not in available_models:
-        raise ValueError(f'Error: Model "{model_name}" not found. Choose one of: {available_models}')
+        raise ValueError(
+            f'Error: Model "{model_name}" not found. Choose one of: {available_models}')
+
     genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
     try:
         model = genai.GenerativeModel(model_name)
@@ -121,11 +150,14 @@ if __name__ == '__main__':
     except InternalServerError as e:
         logging.exception(f'Error: Internal google error:')
         sys.exit()
+        
     updated_src = generate_all_docstrings(file_path, model, methods, extensive)
+
     if not no_backup:
         backup_file = file_path + '.bak'
         if os.path.exists(backup_file):
             os.remove(backup_file)
         os.rename(file_path, backup_file)
+
     with open(file_path, 'w') as f:
         f.write(updated_src)
