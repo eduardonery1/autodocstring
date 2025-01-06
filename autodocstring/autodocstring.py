@@ -99,7 +99,7 @@ Raises:
     return ast.unparse(tree)
 
 
-if __name__ == '__main__':
+def main():
     available_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash',
                         'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-1.0-pro']
     default_model = available_models[1]
@@ -161,3 +161,6 @@ if __name__ == '__main__':
 
     with open(file_path, 'w') as f:
         f.write(updated_src)
+
+if __name__ == '__main__':
+    main()
