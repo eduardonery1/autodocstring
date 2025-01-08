@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 from google.api_core.exceptions import InternalServerError, NotFound
 
 
+class DocstringGenerationError(Exception):
+    """ Custom exception for docstring generation errors. """
+    pass
+
 def generate_docstring(function_code, function_name, model, tries=2, extensive=False):
     """Generate a docstring for a given Python function.
 
@@ -25,9 +29,11 @@ Returns:
 Raises:
   Exception: If the language model's `generate_content` method raises an exception.
 """
+
     prompt_extensive = "Analyze the following python function and generate a google style docstring that includes:\n    * A description of the function's purpose without revealing internal details.\n    * An explanation of each parameter, including their types and expected values.\n    * A description of the function's return value, including its type and possible values.\n    * Any potential exceptions that the function might raise.\n    * A few examples of how to use the function. Include the triple quotes at the beginning and the end of the text.{}"
     prompt_simple = "Analyze the following python function and generate a short and consise google style docstring that includes:\n    * A description of the function's purpose without revealing internal details.\n    * An explanation of each parameter, including their types and expected values.\n    * A description of the function's return value, including its type and possible values.\n    * Any potential exceptions that the function might raise. Include the triple quotes at the beginning and the end of the text. {}"
     prompt = prompt_extensive if extensive else prompt_simple
+
     for attempt in range(tries):
         try:
             response = model.generate_content(prompt.format(function_code))
@@ -36,7 +42,8 @@ Raises:
                 f'Error generating docstring at attempt {attempt + 1}.')
             continue
         raw_docstring = response.text
-        logging.debug(raw_docstring)
+        logging.debug(f"Generated this docstring for {function_name}: {raw_docstring}")
+
         docstring = raw_docstring.find('"""')
         if docstring != -1:
             docstring_start = docstring + 3
@@ -49,11 +56,12 @@ Raises:
         else:
             logging.warning(
                 f'Could not find opening triple quotes for function, regenerating... {function_name}')
-    logging.warning(
+    logging.error(
         f'Could not generate docstrings in a good format for this method: {function_name}.')
+    raise DocstringGenerationError
 
 
-def generate_all_docstrings(file_path, model, methods, extensive):
+def generate_all_docstrings(file_path, model, methods, overwrite, extensive):
     """Generates docstrings for functions in a Python file.
 
 Args:
@@ -68,6 +76,7 @@ Returns:
 Raises:
   Exception: If there's a syntax error in the input file.
 """
+
     with open(file_path, 'r') as f:
         src = f.read()
 
@@ -82,21 +91,43 @@ Raises:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
-            if methods and node.name.startswith('_') and (node.name not in methods):
+            private_method = node.name.startswith('_')
+            not_listed_method = node.name not in methods
+            current_docstring = ast.get_docstring(node)
+            has_docstring = current_docstring is not None
+
+            logging.debug("Params for method checking {}: {}".format(node.name, {
+                'private_method': private_method,
+                'listed_method': not_listed_method,
+                'has_docstring': has_docstring,
+                'overwrite': overwrite
+                }))
+
+            # methods and private and not listed and (docstring or overwrite)
+            if  (methods is not None and 
+                ((private_method and not_listed_method) or (has_docstring and not overwrite))
+                 ):
                 continue
+             
             function_code = ast.get_source_segment(src, node)
-            logging.info(f'Generating docstring to {node.name}...')
+            print(f'Generating docstring to {node.name}...')
+            
             try:
                 docstring = generate_docstring(
                     function_code, node.name, model, extensive=extensive)
-            except Exception as e:
-                logging.error(
-                    f'Error generating docstring for {node.name} after several retries.')
+            except DocstringGenerationError:
+                logging.exception(f"Couldn't generate a docstring for {node.name}")
                 continue
-            node.body = [ast.Expr(value=ast.Constant(
-                value=docstring, kind=None))] + node.body
 
-    return ast.unparse(tree)
+            if has_docstring and overwrite: 
+                logging.debug(f"Element 0 at body: {ast.unparse(node.body[0])}")
+                del node.body[0] 
+            node.body = [ast.Expr(value=ast.Constant(value=docstring, kind=None))] + node.body
+            logging.debug(f"Method's body after editing: {ast.unparse(node)}")
+    try:
+        return ast.unparse(tree)
+    except Exception:
+        logging.exception("Exception unparsing file:")
 
 
 def main():
@@ -115,6 +146,7 @@ def main():
     args.add_argument('--extensive', help='Choose to use an extensive docstring with examples in Google style.',
                       default=False, action='store_true')
     args.add_argument('--debug', action='store_true', default=False)
+    args.add_argument('--overwrite', action='store_true', default=False)
 
     parsed_args = args.parse_args()
     file_path = parsed_args.module
@@ -123,11 +155,13 @@ def main():
     no_backup = parsed_args.no_backup
     extensive = parsed_args.extensive
     debug = parsed_args.debug
+    overwrite = parsed_args.overwrite
 
-    logging_level = logging.DEBUG if debug else logging.INFO
+    logging_level = logging.DEBUG if debug else logging.WARNING
     logging.basicConfig(level=logging_level)
     logging.debug(vars(parsed_args))
-
+    
+    # Checking environment and arguments
     valid_extensions = {'.py', '.pyi', '.pyw', '.py.bak'}
     if not os.path.exists(file_path) or not any((ext in file_path for ext in valid_extensions)):
         raise FileNotFoundError(
@@ -140,7 +174,8 @@ def main():
     if model_name not in available_models:
         raise ValueError(
             f'Error: Model "{model_name}" not found. Choose one of: {available_models}')
-
+    
+    # Loading model
     genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
     try:
         model = genai.GenerativeModel(model_name)
@@ -150,8 +185,9 @@ def main():
     except InternalServerError as e:
         logging.exception(f'Error: Internal google error:')
         sys.exit()
-        
-    updated_src = generate_all_docstrings(file_path, model, methods, extensive)
+    
+    # Generating and modifying file 
+    updated_src = generate_all_docstrings(file_path, model, methods, overwrite, extensive)
 
     if not no_backup:
         backup_file = file_path + '.bak'
